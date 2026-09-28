@@ -6,6 +6,7 @@ import os
 import secrets
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -125,8 +126,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, json.dumps(result))
         except (ValueError, RuntimeError, TimeoutError) as error:
             self.send(400, json.dumps({"error": str(error)}))
-        except Exception:
-            self.send(500, json.dumps({"error": "Local demo failed; no automatic retry. Reset to recover."}))
+        except Exception as error:
+            # The generic 500 must not swallow the cause: the traceback goes to the
+            # server terminal and the message into the response — a bare "Local demo
+            # failed" leaves nothing to diagnose (observed 2026-09-28).
+            traceback.print_exc()
+            self.send(500, json.dumps({"error": f"{type(error).__name__}: {error}"}))
         finally:
             LOCK.release()
 
