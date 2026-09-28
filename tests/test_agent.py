@@ -315,6 +315,35 @@ def test_text_helper_rejects_invalid_values(monkeypatch, content):
         model.field_text({"goal": "Find a flight"})
 
 
+def test_anthropic_style_text_helper_reads_text_block(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setenv("TEXT_MODEL_API_STYLE", "anthropic")
+    post = Mock(return_value={
+        "content": [
+            {"type": "thinking", "thinking": "working it out"},
+            {"type": "text", "text": '{"text":"Zurich"}'},
+        ],
+        "usage": {"input_tokens": 10, "output_tokens": 20},
+    })
+    monkeypatch.setattr(model, "post_json", post)
+    context = {"goal": "Fly from Zurich to London"}
+    value, helper = model.field_text(context)
+    assert value == "Zurich"
+    assert helper["usage"]["output_tokens"] == 20
+    assert post.call_args.args[0].endswith("/messages")
+    assert post.call_args.kwargs["headers"] == {"anthropic-version": "2023-06-01"}
+    body = post.call_args.args[2]
+    assert body["system"] and body["messages"] == [{"role": "user", "content": json.dumps(context)}]
+
+
+def test_anthropic_style_strips_code_fences(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setenv("TEXT_MODEL_API_STYLE", "anthropic")
+    post = Mock(return_value={"content": [{"type": "text", "text": '```json\n{"text":"Zurich"}\n```'}]})
+    monkeypatch.setattr(model, "post_json", post)
+    assert model.field_text({"goal": "Find a flight"})[0] == "Zurich"
+
+
 def test_navigation_during_prediction_reobserves_without_action(runner):
     runner.state["browser"].fresh.side_effect = StalePage("Document navigating")
     runner.command("tick")
