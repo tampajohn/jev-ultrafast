@@ -1,6 +1,7 @@
 """The complete agent loop. Typed choices, observable state, bounded execution."""
 
 import base64
+import json
 import time
 from pathlib import Path
 
@@ -82,6 +83,11 @@ class Agent:
                     "elapsed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
                 }
             )
+            if self.record_dir:
+                # Every recorded decision is a (state, question set, choice) triple —
+                # training rows for a future task-specific checkpoint fine-tune.
+                with (self.record_dir / "decisions.jsonl").open("a") as f:
+                    f.write(json.dumps(state["decisions"][-1], default=str) + "\n")
             state["status"] = "predicted"
         elif name == "act":
             decision, page = state["decision"], state["page"]
@@ -165,6 +171,17 @@ class Agent:
             yield self.command("tick")
 
     def close(self):
+        if self.record_dir and self.state.get("decisions"):
+            # Outcome row for trajectory-level labeling (landed vs wandered).
+            with (self.record_dir / "decisions.jsonl").open("a") as f:
+                f.write(json.dumps({
+                    "run_summary": True,
+                    "goal": self.state["goal"],
+                    "status": self.state["status"],
+                    "actions": len(self.state["history"]),
+                    "final_url": self.state["page"]["url"],
+                    "elapsed_ms": self.state["elapsed_ms"],
+                }, default=str) + "\n")
         self.browser.close()
 
     def __enter__(self):
