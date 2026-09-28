@@ -65,7 +65,7 @@ def test_one_batched_call_carries_all_heads(monkeypatch):
     assert set(d) == {
         "choice", "operation", "target", "confidence", "probabilities", "operation_probabilities",
         "target_probabilities", "target_confidence", "raw_answers", "model", "usage", "latency_ms",
-        "request", "backend",
+        "request", "backend", "stop_override",
     }
     assert d["backend"] == "laya"
     assert d["operation"] == "CLICK" and d["target"] == "2" and d["choice"] == "e3"
@@ -162,6 +162,45 @@ def test_pack_state_packs_decision_first_and_truncates():
     assert len(packed["goal"]) <= 200
     assert len(packed["page_text"]) <= 500
     assert "Zürich" in packed["field_values"]
+
+
+def _stop_guard_fake(probs):
+    def fake(state, questions):
+        answers = {
+            "operation": {"choice": "DONE", "confidence": 0.1, "probabilities": probs},
+            "click_target": choice(questions["click_target"]["criteria"], "2"),
+            "type_text_target": choice(questions["type_text_target"]["criteria"], "1"),
+        }
+        return {"model": "test", "answers": answers, "usage": {}}
+    return fake
+
+
+# DONE is the argmax in both (validate_choice demands it); only its margin varies.
+LOW_STOP = {"CLICK": 0.25, "TYPE_TEXT": 0.13, "WAIT": 0.13, "DONE": 0.32, "BLOCKED": 0.17}
+HIGH_STOP = {"CLICK": 0.08, "TYPE_TEXT": 0.04, "WAIT": 0.04, "DONE": 0.8, "BLOCKED": 0.04}
+
+
+def test_low_confidence_stop_falls_back_to_actionable(monkeypatch):
+    monkeypatch.setattr(laya, "_predict", _stop_guard_fake(LOW_STOP))
+    d = laya.choose(page(), "Find a book", [])
+    assert d["operation"] == "CLICK" and d["target"] == "2" and d["choice"] == "e3"
+    assert d["stop_override"]["from"] == "DONE"
+    assert d["stop_override"]["probability"] == pytest.approx(0.32)
+
+
+def test_confident_stop_is_respected(monkeypatch):
+    monkeypatch.setattr(laya, "_predict", _stop_guard_fake(HIGH_STOP))
+    d = laya.choose(page(), "Find a book", [])
+    assert d["operation"] == "DONE" and d["choice"] == "DONE"
+    assert d["stop_override"] is None
+
+
+def test_stop_guard_threshold_is_env_tunable(monkeypatch):
+    monkeypatch.setenv("LAYA_STOP_MIN_P", "0.2")
+    monkeypatch.setattr(laya, "_predict", _stop_guard_fake(LOW_STOP))
+    d = laya.choose(page(), "Find a book", [])
+    assert d["operation"] == "DONE"
+    assert d["stop_override"] is None
 
 
 def test_dispatch_routes_to_laya_by_default(monkeypatch):

@@ -162,6 +162,18 @@ def choose(state, goal, history):
         answers.get("operation", {}), questions["operation"]["criteria"], provider="Laya"
     )
     operation = operation_answer["choice"]
+    # Zero-shot stop-guard: base laya parks most of the operation mass on the terminal
+    # ops on a fresh page (measured 2026-09-28: DONE 0.32 / BLOCKED 0.26 on Wikipedia's
+    # main page, confidence 0.11). A stop that isn't a majority opinion must not end a
+    # run while real operations exist — fall back to the best actionable operation.
+    stop_override = None
+    if operation in {"DONE", "BLOCKED"} and targets:
+        p_stop = operation_answer["probabilities"][operation]
+        min_p = float(os.environ.get("LAYA_STOP_MIN_P", "0.5"))
+        actionable = {op: p for op, p in operation_answer["probabilities"].items() if op in targets}
+        if p_stop < min_p and actionable:
+            stop_override = {"from": operation, "probability": p_stop, "min_p": min_p}
+            operation = max(actionable, key=actionable.get)
     target = None
     target_answer = None
     target_confidence = None
@@ -201,6 +213,7 @@ def choose(state, goal, history):
         "confidence": operation_answer["confidence"],
         "probabilities": probabilities,
         "operation_probabilities": operation_answer["probabilities"],
+        "stop_override": stop_override,
         "target_probabilities": target_answer["probabilities"] if target_answer else {},
         "target_confidence": target_confidence,
         "raw_answers": answers,
