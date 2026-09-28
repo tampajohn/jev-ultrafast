@@ -65,7 +65,7 @@ def test_one_batched_call_carries_all_heads(monkeypatch):
     assert set(d) == {
         "choice", "operation", "target", "confidence", "probabilities", "operation_probabilities",
         "target_probabilities", "target_confidence", "raw_answers", "model", "usage", "latency_ms",
-        "request", "backend", "stop_override",
+        "request", "backend", "overrides",
     }
     assert d["backend"] == "laya"
     assert d["operation"] == "CLICK" and d["target"] == "2" and d["choice"] == "e3"
@@ -184,15 +184,15 @@ def test_low_confidence_stop_falls_back_to_actionable(monkeypatch):
     monkeypatch.setattr(laya, "_predict", _stop_guard_fake(LOW_STOP))
     d = laya.choose(page(), "Find a book", [])
     assert d["operation"] == "CLICK" and d["target"] == "2" and d["choice"] == "e3"
-    assert d["stop_override"]["from"] == "DONE"
-    assert d["stop_override"]["probability"] == pytest.approx(0.32)
+    assert d["overrides"]["stop"]["from"] == "DONE"
+    assert d["overrides"]["stop"]["probability"] == pytest.approx(0.32)
 
 
 def test_confident_stop_is_respected(monkeypatch):
     monkeypatch.setattr(laya, "_predict", _stop_guard_fake(HIGH_STOP))
     d = laya.choose(page(), "Find a book", [])
     assert d["operation"] == "DONE" and d["choice"] == "DONE"
-    assert d["stop_override"] is None
+    assert d["overrides"] == {}
 
 
 def test_stop_guard_threshold_is_env_tunable(monkeypatch):
@@ -200,7 +200,47 @@ def test_stop_guard_threshold_is_env_tunable(monkeypatch):
     monkeypatch.setattr(laya, "_predict", _stop_guard_fake(LOW_STOP))
     d = laya.choose(page(), "Find a book", [])
     assert d["operation"] == "DONE"
-    assert d["stop_override"] is None
+    assert d["overrides"] == {}
+
+
+def test_repeated_target_falls_back_within_head(monkeypatch):
+    def fake(state, questions):
+        return {
+            "model": "test",
+            "answers": {
+                "operation": choice(questions["operation"]["criteria"], "CLICK"),
+                # The model insists on target 2 (e3) — already clicked twice in a row.
+                "click_target": {"choice": "2", "confidence": 0.5,
+                                 "probabilities": {"1": 0.3, "2": 0.7}},
+                "type_text_target": choice(questions["type_text_target"]["criteria"], "1"),
+            },
+            "usage": {},
+        }
+
+    monkeypatch.setattr(laya, "_predict", fake)
+    history = [{"operation": "CLICK", "choice": "e3"}, {"operation": "CLICK", "choice": "e3"}]
+    d = laya.choose(page(), "Find a book", history)
+    assert d["target"] == "1" and d["choice"] == "e2"
+    assert d["overrides"]["repeat"] == {"from": "2", "to": "1", "repeats": 2}
+
+
+def test_single_repeat_does_not_override(monkeypatch):
+    def fake(state, questions):
+        return {
+            "model": "test",
+            "answers": {
+                "operation": choice(questions["operation"]["criteria"], "CLICK"),
+                "click_target": {"choice": "2", "confidence": 0.5,
+                                 "probabilities": {"1": 0.3, "2": 0.7}},
+                "type_text_target": choice(questions["type_text_target"]["criteria"], "1"),
+            },
+            "usage": {},
+        }
+
+    monkeypatch.setattr(laya, "_predict", fake)
+    d = laya.choose(page(), "Find a book", [{"operation": "CLICK", "choice": "e3"}])
+    assert d["target"] == "2" and d["choice"] == "e3"
+    assert d["overrides"] == {}
 
 
 def test_dispatch_routes_to_laya_by_default(monkeypatch):

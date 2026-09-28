@@ -166,13 +166,13 @@ def choose(state, goal, history):
     # ops on a fresh page (measured 2026-09-28: DONE 0.32 / BLOCKED 0.26 on Wikipedia's
     # main page, confidence 0.11). A stop that isn't a majority opinion must not end a
     # run while real operations exist — fall back to the best actionable operation.
-    stop_override = None
+    overrides = {}
     if operation in {"DONE", "BLOCKED"} and targets:
         p_stop = operation_answer["probabilities"][operation]
         min_p = float(os.environ.get("LAYA_STOP_MIN_P", "0.5"))
         actionable = {op: p for op, p in operation_answer["probabilities"].items() if op in targets}
         if p_stop < min_p and actionable:
-            stop_override = {"from": operation, "probability": p_stop, "min_p": min_p}
+            overrides["stop"] = {"from": operation, "probability": p_stop, "min_p": min_p}
             operation = max(actionable, key=actionable.get)
     target = None
     target_answer = None
@@ -201,6 +201,25 @@ def choose(state, goal, history):
             full_probs = {i: target_answer["probabilities"].get(i, 0.0) for i in targets[operation]}
         target_confidence = target_answer["confidence"]
         choice = targets[operation][target]["id"]
+        # Anti-loop: the zero-shot model can fixate on one no-op target (measured e2e
+        # 2026-09-28: CLICK [1] x20+ on Wikipedia's main page — focus changes flip the
+        # fingerprint, so the executor's no-progress guard never trips). A third
+        # consecutive identical (operation, choice) falls back to the best target in
+        # the same head that wasn't among the last three choices.
+        repeats = 0
+        for h in reversed(history):
+            if h.get("operation") == operation and h.get("choice") == choice:
+                repeats += 1
+            else:
+                break
+        if repeats >= 2 and len(full_probs) > 1:
+            recent = {h.get("choice") for h in history[-3:]}
+            for alt in sorted(full_probs, key=lambda i: -full_probs[i]):
+                if targets[operation][alt]["id"] not in recent:
+                    overrides["repeat"] = {"from": target, "to": alt, "repeats": repeats}
+                    target = alt
+                    break
+            choice = targets[operation][target]["id"]
         probabilities = {a["id"]: full_probs[index] for index, a in targets[operation].items()}
     else:
         choice = controls[operation]["id"] if operation in controls else operation
@@ -213,7 +232,7 @@ def choose(state, goal, history):
         "confidence": operation_answer["confidence"],
         "probabilities": probabilities,
         "operation_probabilities": operation_answer["probabilities"],
-        "stop_override": stop_override,
+        "overrides": overrides,
         "target_probabilities": target_answer["probabilities"] if target_answer else {},
         "target_confidence": target_confidence,
         "raw_answers": answers,
