@@ -7,6 +7,11 @@ license = "MIT"
 requires-python = ">=3.12"
 dependencies = ["browser-harness==0.1.13", "httpx[http2]>=0.28,<1"]
 
+[project.optional-dependencies]
+# Local decision backend (default). Not needed when JEV_BACKEND=typesafe, or when
+# pointing LAYA_URL at a layad daemon that has its own environment.
+laya = ["laya"]
+
 [project.scripts]
 jev = "jev_ultrafast.demo:main"
 

@@ -88,6 +88,7 @@ def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
             },
         }
 
+    monkeypatch.setenv("JEV_BACKEND", "typesafe")
     monkeypatch.setenv("TYPESAFE_API_KEY", "test")
     monkeypatch.setattr(model, "post_json", post)
     d = model.choose(page(), "Find a book", [])
@@ -107,6 +108,7 @@ def test_click_cannot_consume_a_text_target(monkeypatch):
             },
         }
 
+    monkeypatch.setenv("JEV_BACKEND", "typesafe")
     monkeypatch.setenv("TYPESAFE_API_KEY", "test")
     monkeypatch.setattr(model, "post_json", post)
     with pytest.raises(ValueError, match="Invalid TypeSafe"):
@@ -134,6 +136,7 @@ def test_target_head_receives_control_state_and_full_next_step_rules(monkeypatch
             },
         }
 
+    monkeypatch.setenv("JEV_BACKEND", "typesafe")
     monkeypatch.setenv("TYPESAFE_API_KEY", "test")
     monkeypatch.setattr(model, "post_json", post)
     d = model.choose(p, "Search with free cancellation", [])

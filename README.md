@@ -50,14 +50,33 @@ Target questions are speculative. If the operation is `CLICK`, only `click_targe
 
 There are no site-specific action scripts or prepared field strings in the policy. The Flights example supplies a goal and independently verifies the outcome. The screenshot renderer adds labels afterward; it does not drive the browser.
 
+## Local decisions with Laya
+
+By default the operation/target choices are made **locally** by [Laya](https://huggingface.co/convaiinnovations/laya), a 421M-parameter System 1 decision model (ModernBERT-large + decision head) — no `TYPESAFE_API_KEY` and no network round trip for decisions. The same speculative fan-out applies: the operation question and every target head are judged in **one batched forward pass**, ~25 ms on Apple silicon.
+
+```bash
+uv sync --extra laya
+uv run python scripts/layad.py   # preloaded judge server on 127.0.0.1:8420
+```
+
+Leave `layad` running and every decision is one localhost HTTP call. `LAYA_INPROCESS=1` skips the daemon and loads the model inside the agent process instead. `JEV_BACKEND=typesafe` restores the hosted TypeSafe policy (with `TYPESAFE_API_KEY`).
+
+Two accommodations for a small encoder checkpoint (512-token window, 192-token question head):
+
+- **Condensed instructions.** The policy rules are rewritten to fit the question head alongside the options; state is packed decision-first (goal, recent actions, current field values) because the serialized state right-truncates at ~320 tokens.
+- **Chunked tournaments.** A target head with more than `LAYA_MAX_OPTIONS` (default 10) candidates is split into chunks judged in the same batched call; only the winning operation's chunk winners go to a runoff. Element labels never get crushed to unreadability.
+
+Base Laya judges zero-shot here, and its entropy confidence is honest — low-confidence steps stand out in the inspector. Recording `decisions[]` from real runs gives labeled (state, choice) pairs for fine-tuning a task-specific checkpoint later.
+
 ## Try it
 
 ```bash
 git clone https://github.com/browser-use/jev-ultrafast.git
 cd jev-ultrafast
-uv sync
+uv sync --extra laya
 cp .env.example .env
-# Add TYPESAFE_API_KEY and TEXT_MODEL_API_KEY.
+# Add TEXT_MODEL_API_KEY (used for TYPE_TEXT).
+uv run python scripts/layad.py &   # local decisions; or set JEV_BACKEND=typesafe + TYPESAFE_API_KEY
 uv run jev
 ```
 

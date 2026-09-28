@@ -1,4 +1,8 @@
-"""TypeSafe makes choices; an optional small OpenAI-compatible model writes field values."""
+"""TypeSafe makes choices; an optional small OpenAI-compatible model writes field values.
+
+JEV_BACKEND selects who makes the operation/target choices: "laya" (default) runs a
+local System 1 decision model (see laya.py); "typesafe" uses the hosted TypeSafe API.
+"""
 
 import json
 import math
@@ -27,7 +31,7 @@ def post_json(url, key, body):
     raise RuntimeError("Model unavailable")
 
 
-def validate_choice(answer, ids):
+def validate_choice(answer, ids, provider="TypeSafe"):
     try:
         probabilities = answer["probabilities"]
         numbers = [*probabilities.values(), answer["confidence"]]
@@ -41,7 +45,7 @@ def validate_choice(answer, ids):
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:
-        raise ValueError("Invalid TypeSafe response; no action executed.")
+        raise ValueError(f"Invalid {provider} response; no action executed.")
     return answer
 
 
@@ -79,6 +83,14 @@ def action_space(actions):
 
 
 def choose(state, goal, history):
+    if os.environ.get("JEV_BACKEND", "laya").strip().lower() != "typesafe":
+        from . import laya  # lazy: laya.py imports action_space/validate_choice from here
+
+        return laya.choose(state, goal, history)
+    return choose_typesafe(state, goal, history)
+
+
+def choose_typesafe(state, goal, history):
     elements, targets, controls = action_space(state["actions"])
     labels = {
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
