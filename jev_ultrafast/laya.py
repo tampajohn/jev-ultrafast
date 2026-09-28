@@ -19,7 +19,7 @@ import time
 
 import httpx
 
-from .model import action_space, validate_choice
+from .model import action_space, chat_json, validate_choice
 
 # Sized for the operation head: ~8 short options leave ~140 instruction tokens (~560 chars).
 NEXT_ACTION = (
@@ -38,6 +38,15 @@ OPERATION_LABELS = {
     "DONE": "every requirement is visibly satisfied",
     "BLOCKED": "no supported operation can progress",
 }
+
+ESCALATION_INSTRUCTIONS = (
+    "You are the escalation policy for a browser agent whose fast System 1 decision model "
+    "was not confident. Choose the single best next step toward the goal from the offered, "
+    "indexed action space. Return exactly one JSON object: "
+    '{"operation": "<one offered operation key>", "target": "<one index from that '
+    'operation\'s candidate list>", or null when the operation has no candidates (controls, '
+    "DONE, BLOCKED)}. No commentary. " + NEXT_ACTION
+)
 
 CLIENT = httpx.Client(timeout=float(os.environ.get("LAYA_TIMEOUT", "10")))
 _AGENT = None  # in-process model, loaded on first use when LAYA_INPROCESS=1
@@ -135,6 +144,41 @@ def _target_question(goal, operation, candidates):
     }
 
 
+def _escalate(state, goal, history, targets, controls):
+    """System 2 fallback: the helper LLM picks an operation and target over the same
+    indexed action space. Raises on any invalid answer — the caller falls back to laya."""
+    payload = {
+        "goal": goal,
+        "page": {
+            "title": state.get("title", ""),
+            "url": state.get("url", ""),
+            "text": (state.get("text") or "")[:4000],
+        },
+        "recent_actions": [{k: h.get(k) for k in ("action", "kind", "text")} for h in history[-6:]],
+        "operations": {
+            **{op: {i: _target_label(i, a) for i, a in cands.items()} for op, cands in targets.items()},
+            **{key: (c.get("label") or key)[:60] for key, c in controls.items()},
+            "DONE": OPERATION_LABELS["DONE"],
+            "BLOCKED": OPERATION_LABELS["BLOCKED"],
+        },
+    }
+    output, meta = chat_json(ESCALATION_INSTRUCTIONS, payload)
+    op = output.get("operation")
+    if op not in payload["operations"]:
+        raise ValueError(f"escalation chose unknown operation {op!r}")
+    target = None
+    if op in targets:
+        target = str(output.get("target"))
+        if target not in targets[op]:
+            raise ValueError(f"escalation chose invalid target {target!r} for {op}")
+        choice = targets[op][target]["id"]
+    elif op in controls:
+        choice = controls[op]["id"]
+    else:  # DONE / BLOCKED
+        choice = op
+    return {"operation": op, "target": target, "choice": choice, "meta": meta}
+
+
 def choose(state, goal, history):
     elements, targets, controls = action_space(state["actions"])
     questions = {"operation": _operation_question(goal, targets, controls)}
@@ -225,6 +269,36 @@ def choose(state, goal, history):
         choice = controls[operation]["id"] if operation in controls else operation
         probabilities = {choice: operation_answer["probabilities"][operation]}
         full_probs = None
+    escalated = None
+    if os.environ.get("LAYA_ESCALATE", "1") != "0":
+        op_conf = operation_answer["confidence"]
+        tgt_conf = target_confidence if target_confidence is not None else 1.0
+        if (
+            op_conf < float(os.environ.get("LAYA_ESCALATE_CONF", "0.5"))
+            or tgt_conf < float(os.environ.get("LAYA_ESCALATE_TARGET_CONF", "0.35"))
+        ):
+            # System 2 fallback. Measured on the demo fixture (2026-09-28): base laya's
+            # op confidence never exceeded 0.31 across 61 steps, it vote-looped two nav
+            # links 48 times, and it voted BLOCKED on a third of the steps — while its
+            # act/escalate head sat saturated at 1.0. Entropy confidence is the honest
+            # signal. The escalation is recorded with GLM's pick: a free teacher label
+            # for the fine-tune that eventually shrinks the escalation rate.
+            try:
+                fix = _escalate(state, goal, history, targets, controls)
+                escalated = {
+                    **fix["meta"],
+                    "laya_operation": operation,
+                    "laya_target": target,
+                    "laya_confidence": op_conf,
+                }
+                operation, target, choice = fix["operation"], fix["target"], fix["choice"]
+                probabilities = {choice: 1.0}
+            except Exception as e:  # fail open to the laya decision
+                escalated = {
+                    "error": f"{type(e).__name__}: {str(e)[:150]}",
+                    "laya_operation": operation,
+                    "laya_confidence": op_conf,
+                }
     return {
         "choice": choice,
         "operation": operation,
@@ -241,4 +315,5 @@ def choose(state, goal, history):
         "latency_ms": round((time.perf_counter() - started) * 1000),
         "request": {"state": packed, "questions": questions},
         "backend": "laya",
+        "escalated": escalated,
     }

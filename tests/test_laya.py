@@ -6,6 +6,12 @@ from jev_ultrafast import laya, model
 from jev_ultrafast.browser import fingerprint
 
 
+@pytest.fixture(autouse=True)
+def _no_escalation(monkeypatch):
+    """Escalation is opt-in per test; the default path under test is pure laya."""
+    monkeypatch.setenv("LAYA_ESCALATE", "0")
+
+
 def page():
     state = {
         "url": "https://example.test/",
@@ -65,7 +71,7 @@ def test_one_batched_call_carries_all_heads(monkeypatch):
     assert set(d) == {
         "choice", "operation", "target", "confidence", "probabilities", "operation_probabilities",
         "target_probabilities", "target_confidence", "raw_answers", "model", "usage", "latency_ms",
-        "request", "backend", "overrides",
+        "request", "backend", "overrides", "escalated",
     }
     assert d["backend"] == "laya"
     assert d["operation"] == "CLICK" and d["target"] == "2" and d["choice"] == "e3"
@@ -241,6 +247,82 @@ def test_single_repeat_does_not_override(monkeypatch):
     d = laya.choose(page(), "Find a book", [{"operation": "CLICK", "choice": "e3"}])
     assert d["target"] == "2" and d["choice"] == "e3"
     assert d["overrides"] == {}
+
+
+def _low_conf_fake(state, questions):
+    """Laya answers with honest low confidence — the escalation trigger condition."""
+    answers = {qid: choice(q["criteria"], next(iter(q["criteria"]))) for qid, q in questions.items()}
+    for a in answers.values():
+        a["confidence"] = 0.2
+    return {"model": "test", "answers": answers, "usage": {}}
+
+
+def test_escalation_applies_llm_choice(monkeypatch):
+    monkeypatch.setenv("LAYA_ESCALATE", "1")
+    monkeypatch.setattr(laya, "_predict", _low_conf_fake)
+    monkeypatch.setattr(
+        laya, "chat_json",
+        lambda system, context: ({"operation": "TYPE_TEXT", "target": "1"},
+                                 {"model": "glm-test", "latency_ms": 5, "usage": {}}),
+    )
+    d = laya.choose(page(), "Find a book", [])
+    assert d["operation"] == "TYPE_TEXT" and d["target"] == "1" and d["choice"] == "e1"
+    assert d["probabilities"] == {"e1": 1.0}
+    assert d["escalated"]["model"] == "glm-test"
+    assert d["escalated"]["laya_operation"] == "TYPE_TEXT"  # _low_conf_fake takes the first criterion
+
+
+def test_escalation_llm_may_stop(monkeypatch):
+    monkeypatch.setenv("LAYA_ESCALATE", "1")
+    monkeypatch.setattr(laya, "_predict", _low_conf_fake)
+    monkeypatch.setattr(
+        laya, "chat_json",
+        lambda system, context: ({"operation": "DONE", "target": None},
+                                 {"model": "glm-test", "latency_ms": 5, "usage": {}}),
+    )
+    d = laya.choose(page(), "Find a book", [])
+    assert d["operation"] == "DONE" and d["choice"] == "DONE" and d["target"] is None
+
+
+@pytest.mark.parametrize("output", [
+    {"operation": "JUMP", "target": None},      # unknown operation
+    {"operation": "CLICK", "target": "99"},     # target outside the head
+])
+def test_escalation_invalid_answer_falls_back_to_laya(monkeypatch, output):
+    monkeypatch.setenv("LAYA_ESCALATE", "1")
+    monkeypatch.setattr(laya, "_predict", _low_conf_fake)
+    monkeypatch.setattr(laya, "chat_json", lambda system, context: (output, {"model": "glm-test"}))
+    d = laya.choose(page(), "Find a book", [])
+    assert d["operation"] == "TYPE_TEXT" and d["target"] == "1" and d["choice"] == "e1"
+    assert "error" in d["escalated"]
+
+
+def test_escalation_transport_failure_falls_back_to_laya(monkeypatch):
+    monkeypatch.setenv("LAYA_ESCALATE", "1")
+    monkeypatch.setattr(laya, "_predict", _low_conf_fake)
+
+    def boom(system, context):
+        raise RuntimeError("Model connection failed; no action executed.")
+
+    monkeypatch.setattr(laya, "chat_json", boom)
+    d = laya.choose(page(), "Find a book", [])
+    assert d["operation"] == "TYPE_TEXT" and d["choice"] == "e1"
+    assert "error" in d["escalated"]
+
+
+def test_confident_laya_does_not_escalate(monkeypatch):
+    monkeypatch.setenv("LAYA_ESCALATE", "1")
+
+    def confident(state, questions):
+        answers = {qid: choice(q["criteria"], next(iter(q["criteria"]))) for qid, q in questions.items()}
+        return {"model": "test", "answers": answers, "usage": {}}
+
+    monkeypatch.setattr(laya, "_predict", confident)
+    called = []
+    monkeypatch.setattr(laya, "chat_json", lambda system, context: called.append(1) or ({}, {}))
+    d = laya.choose(page(), "Find a book", [])
+    assert d["escalated"] is None
+    assert not called
 
 
 def test_dispatch_routes_to_laya_by_default(monkeypatch):
