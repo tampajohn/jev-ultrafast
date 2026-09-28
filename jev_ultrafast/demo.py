@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -58,6 +59,8 @@ def command(name, body):
             goal,
             screenshots=True,
             record_dir=Path.cwd() / "artifacts" / "frames" if body.get("record") else None,
+            # Always-on decision traces (no screenshots) — every run is fine-tune data.
+            trace_dir=Path.cwd() / "artifacts" / "traces" / str(int(time.time())),
         )
         AGENT.state["scenario"] = scenario
     else:
