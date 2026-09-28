@@ -73,13 +73,16 @@ def command(name, body):
 class Handler(BaseHTTPRequestHandler):
     def send(self, status, content, mime="application/json"):
         content = content if isinstance(content, bytes) else content.encode()
-        self.send_response(status)
-        self.send_header("Content-Type", mime)
-        self.send_header("Content-Length", str(len(content)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        self.wfile.write(content)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(content)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the browser went away mid-response (tab closed/refreshed); harmless here
 
     def do_GET(self):
         if self.headers.get("Host") != f"127.0.0.1:{PORT}":
