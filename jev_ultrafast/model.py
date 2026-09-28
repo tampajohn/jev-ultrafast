@@ -195,7 +195,10 @@ def field_text(context):
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
     else:
-        reasoning = {"thinking": {"type": "disabled"}} if "api.deepseek.com/" in base else {"reasoning": {"effort": "low"}}
+        if "api.deepseek.com/" in base:
+            reasoning = {"thinking": {"type": "disabled"}}
+        else:
+            reasoning = {"reasoning": {"effort": "low"}}
         if os.environ.get("TEXT_MODEL_REASONING") == "none":
             reasoning = {"reasoning": {"enabled": False}}
         result = post_json(
