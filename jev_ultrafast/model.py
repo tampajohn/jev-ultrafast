@@ -21,6 +21,11 @@ def post_json(url, key, body, headers=None):
         try:
             response = CLIENT.post(url, json=body, headers={"Authorization": f"Bearer {key}", **(headers or {})})
         except httpx.HTTPError:
+            # Transport failures (timeouts under proxy congestion) share the retry
+            # budget with 429/529/503 — one hiccup must not kill a 20-step run.
+            if attempt < 2:
+                time.sleep(0.5 * 2**attempt)
+                continue
             raise RuntimeError("Model connection failed; no action executed.") from None
         if response.status_code in {429, 529, 503} and attempt < 2:
             time.sleep(0.5 * 2**attempt)

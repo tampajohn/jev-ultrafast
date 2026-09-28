@@ -160,6 +160,44 @@ def test_missing_text_credential_stops_before_guessing(monkeypatch):
         model.field_text({"goal": 'Enter "Zurich"'})
 
 
+def test_post_json_retries_transport_errors(monkeypatch):
+    import httpx
+
+    class Resp:
+        status_code = 200
+        is_error = False
+
+        def json(self):
+            return {"ok": True}
+
+    calls = []
+
+    class FakeClient:
+        def post(self, url, json=None, headers=None):
+            calls.append(1)
+            if len(calls) < 3:
+                raise httpx.ConnectTimeout("congested")
+            return Resp()
+
+    monkeypatch.setattr(model, "CLIENT", FakeClient())
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert model.post_json("http://x", "k", {}) == {"ok": True}
+    assert len(calls) == 3
+
+
+def test_post_json_gives_up_after_three_transport_failures(monkeypatch):
+    import httpx
+
+    class FakeClient:
+        def post(self, url, json=None, headers=None):
+            raise httpx.ConnectTimeout("congested")
+
+    monkeypatch.setattr(model, "CLIENT", FakeClient())
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    with pytest.raises(RuntimeError, match="Model connection failed"):
+        model.post_json("http://x", "k", {})
+
+
 @pytest.fixture
 def runner():
     a = loop.Agent.__new__(loop.Agent)
