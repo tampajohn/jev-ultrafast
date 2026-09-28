@@ -14,6 +14,7 @@ like Jev's speculative fan-out), and only the winning operation's chunk winners 
 to a runoff question in a second, small call.
 """
 
+import json
 import os
 import time
 
@@ -162,7 +163,22 @@ def _escalate(state, goal, history, targets, controls):
             "BLOCKED": OPERATION_LABELS["BLOCKED"],
         },
     }
-    output, meta = chat_json(ESCALATION_INSTRUCTIONS, payload)
+    # GLM's thinking block counts against max_tokens and is not disable-able through
+    # this proxy (measured 2026-09-28), so the budget needs real headroom — and even
+    # then an over-long thinking pass can consume it all, leaving an empty text block
+    # (JSONDecodeError killed a live flights run at step 14). Retry once on that.
+    output = meta = None
+    for attempt in range(2):
+        try:
+            output, meta = chat_json(
+                ESCALATION_INSTRUCTIONS, payload,
+                max_tokens=int(os.environ.get("LAYA_ESCALATE_MAX_TOKENS", "4096")),
+            )
+            meta["escalation_attempts"] = attempt + 1
+            break
+        except json.JSONDecodeError:
+            if attempt == 1:
+                raise
     op = output.get("operation")
     if op not in payload["operations"]:
         raise ValueError(f"escalation chose unknown operation {op!r}")

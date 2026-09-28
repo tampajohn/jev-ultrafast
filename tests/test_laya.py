@@ -262,7 +262,7 @@ def test_escalation_applies_llm_choice(monkeypatch):
     monkeypatch.setattr(laya, "_predict", _low_conf_fake)
     monkeypatch.setattr(
         laya, "chat_json",
-        lambda system, context: ({"operation": "TYPE_TEXT", "target": "1"},
+        lambda system, context, max_tokens=None: ({"operation": "TYPE_TEXT", "target": "1"},
                                  {"model": "glm-test", "latency_ms": 5, "usage": {}}),
     )
     d = laya.choose(page(), "Find a book", [])
@@ -277,7 +277,7 @@ def test_escalation_llm_may_stop(monkeypatch):
     monkeypatch.setattr(laya, "_predict", _low_conf_fake)
     monkeypatch.setattr(
         laya, "chat_json",
-        lambda system, context: ({"operation": "DONE", "target": None},
+        lambda system, context, max_tokens=None: ({"operation": "DONE", "target": None},
                                  {"model": "glm-test", "latency_ms": 5, "usage": {}}),
     )
     d = laya.choose(page(), "Find a book", [])
@@ -291,17 +291,36 @@ def test_escalation_llm_may_stop(monkeypatch):
 def test_escalation_invalid_answer_falls_back_to_laya(monkeypatch, output):
     monkeypatch.setenv("LAYA_ESCALATE", "1")
     monkeypatch.setattr(laya, "_predict", _low_conf_fake)
-    monkeypatch.setattr(laya, "chat_json", lambda system, context: (output, {"model": "glm-test"}))
+    monkeypatch.setattr(laya, "chat_json", lambda system, context, max_tokens=None: (output, {"model": "glm-test"}))
     d = laya.choose(page(), "Find a book", [])
     assert d["operation"] == "TYPE_TEXT" and d["target"] == "1" and d["choice"] == "e1"
     assert "error" in d["escalated"]
+
+
+def test_escalation_retries_once_on_json_failure(monkeypatch):
+    import json as _json
+
+    monkeypatch.setenv("LAYA_ESCALATE", "1")
+    monkeypatch.setattr(laya, "_predict", _low_conf_fake)
+    calls = []
+
+    def flaky(system, context, max_tokens=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise _json.JSONDecodeError("Expecting value", "", 0)
+        return {"operation": "DONE", "target": None}, {"model": "glm-test", "latency_ms": 5, "usage": {}}
+
+    monkeypatch.setattr(laya, "chat_json", flaky)
+    d = laya.choose(page(), "Find a book", [])
+    assert d["operation"] == "DONE" and len(calls) == 2
+    assert d["escalated"]["escalation_attempts"] == 2
 
 
 def test_escalation_transport_failure_falls_back_to_laya(monkeypatch):
     monkeypatch.setenv("LAYA_ESCALATE", "1")
     monkeypatch.setattr(laya, "_predict", _low_conf_fake)
 
-    def boom(system, context):
+    def boom(system, context, max_tokens=None):
         raise RuntimeError("Model connection failed; no action executed.")
 
     monkeypatch.setattr(laya, "chat_json", boom)
@@ -319,7 +338,7 @@ def test_confident_laya_does_not_escalate(monkeypatch):
 
     monkeypatch.setattr(laya, "_predict", confident)
     called = []
-    monkeypatch.setattr(laya, "chat_json", lambda system, context: called.append(1) or ({}, {}))
+    monkeypatch.setattr(laya, "chat_json", lambda system, context, max_tokens=None: called.append(1) or ({}, {}))
     d = laya.choose(page(), "Find a book", [])
     assert d["escalated"] is None
     assert not called
