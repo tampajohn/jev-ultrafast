@@ -257,6 +257,15 @@ def _low_conf_fake(state, questions):
     return {"model": "test", "answers": answers, "usage": {}}
 
 
+def _mid_conf_fake(state, questions):
+    """Confident enough to keep laya's pick on escalation failure (>= WAIT floor 0.35),
+    unsure enough to still trigger escalation (< LAYA_ESCALATE_CONF 0.5)."""
+    answers = {qid: choice(q["criteria"], next(iter(q["criteria"]))) for qid, q in questions.items()}
+    for a in answers.values():
+        a["confidence"] = 0.4
+    return {"model": "test", "answers": answers, "usage": {}}
+
+
 def test_escalation_applies_llm_choice(monkeypatch):
     monkeypatch.setenv("LAYA_ESCALATE", "1")
     monkeypatch.setattr(laya, "_predict", _low_conf_fake)
@@ -290,7 +299,7 @@ def test_escalation_llm_may_stop(monkeypatch):
 ])
 def test_escalation_invalid_answer_falls_back_to_laya(monkeypatch, output):
     monkeypatch.setenv("LAYA_ESCALATE", "1")
-    monkeypatch.setattr(laya, "_predict", _low_conf_fake)
+    monkeypatch.setattr(laya, "_predict", _mid_conf_fake)
     monkeypatch.setattr(laya, "chat_json", lambda system, context, max_tokens=None: (output, {"model": "glm-test"}))
     d = laya.choose(page(), "Find a book", [])
     assert d["operation"] == "TYPE_TEXT" and d["target"] == "1" and d["choice"] == "e1"
@@ -318,7 +327,7 @@ def test_escalation_retries_once_on_json_failure(monkeypatch):
 
 def test_escalation_transport_failure_falls_back_to_laya(monkeypatch):
     monkeypatch.setenv("LAYA_ESCALATE", "1")
-    monkeypatch.setattr(laya, "_predict", _low_conf_fake)
+    monkeypatch.setattr(laya, "_predict", _mid_conf_fake)
 
     def boom(system, context, max_tokens=None):
         raise RuntimeError("Model connection failed; no action executed.")
@@ -327,6 +336,19 @@ def test_escalation_transport_failure_falls_back_to_laya(monkeypatch):
     d = laya.choose(page(), "Find a book", [])
     assert d["operation"] == "TYPE_TEXT" and d["choice"] == "e1"
     assert "error" in d["escalated"]
+
+
+def test_escalation_failure_with_lost_laya_waits_instead(monkeypatch):
+    monkeypatch.setenv("LAYA_ESCALATE", "1")
+    monkeypatch.setattr(laya, "_predict", _low_conf_fake)  # op conf 0.2, picks TYPE_TEXT
+
+    def boom(system, context, max_tokens=None):
+        raise RuntimeError("Model connection failed; no action executed.")
+
+    monkeypatch.setattr(laya, "chat_json", boom)
+    d = laya.choose(page(), "Find a book", [])
+    assert d["operation"] == "WAIT" and d["choice"] == "wait"
+    assert d["escalated"]["fallback"] == "wait"
 
 
 def test_confident_laya_does_not_escalate(monkeypatch):

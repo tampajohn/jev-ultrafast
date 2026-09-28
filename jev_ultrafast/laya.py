@@ -41,12 +41,13 @@ OPERATION_LABELS = {
 }
 
 ESCALATION_INSTRUCTIONS = (
-    "You are the escalation policy for a browser agent whose fast System 1 decision model "
-    "was not confident. Choose the single best next step toward the goal from the offered, "
-    "indexed action space. Return exactly one JSON object: "
-    '{"operation": "<one offered operation key>", "target": "<one index from that '
-    'operation\'s candidate list>", or null when the operation has no candidates (controls, '
-    "DONE, BLOCKED)}. No commentary. " + NEXT_ACTION
+    "Pick the single best next browser action toward the goal from the offered, indexed "
+    "action space. Think briefly — long deliberation does not help here. Answer immediately "
+    'with exactly one JSON object: {"operation": "<one offered operation key>", "target": '
+    '"<one index from that operation\'s candidate list>"} — or target null for a control, '
+    'DONE (goal visibly complete), or BLOCKED (nothing offered can progress). No commentary. '
+    "Fill required fields before submitting; a typed query still needs its suggestion "
+    "clicked; do not repeat an action already reflected in the page."
 )
 
 CLIENT = httpx.Client(timeout=float(os.environ.get("LAYA_TIMEOUT", "10")))
@@ -309,12 +310,24 @@ def choose(state, goal, history):
                 }
                 operation, target, choice = fix["operation"], fix["target"], fix["choice"]
                 probabilities = {choice: 1.0}
-            except Exception as e:  # fail open to the laya decision
+            except Exception as e:
                 escalated = {
                     "error": f"{type(e).__name__}: {str(e)[:150]}",
                     "laya_operation": operation,
                     "laya_confidence": op_conf,
                 }
+                # When both systems are lost, act passively: a failed escalation with a
+                # very unsure laya takes WAIT rather than laya's coin-flip — random clicks
+                # navigate away from progress (measured: a 50%-timeout run undid its own
+                # typed fields by wandering back to the start page).
+                if (
+                    op_conf < float(os.environ.get("LAYA_ESCALATE_ERROR_WAIT_CONF", "0.35"))
+                    and "WAIT" in controls
+                    and operation not in {"DONE", "BLOCKED"}
+                ):
+                    escalated["fallback"] = "wait"
+                    operation, target, choice = "WAIT", None, controls["WAIT"]["id"]
+                    probabilities = {choice: 1.0}
     return {
         "choice": choice,
         "operation": operation,
